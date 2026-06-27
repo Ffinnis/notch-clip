@@ -386,13 +386,15 @@ private struct ClipboardCard: View {
 
         case .image(let data):
             if let image = NSImage(data: data) {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(height: ClipboardCardMetrics.previewHeight)
-                    .frame(maxWidth: .infinity)
-                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .clipped()
+                ImagePreview(image: image)
+            } else {
+                Text(item.previewText)
+                    .previewTextStyle()
+            }
+
+        case .fileURL(let url):
+            if url.isFileURL, let image = NSImage(contentsOf: url) {
+                ImagePreview(image: image)
             } else {
                 Text(item.previewText)
                     .previewTextStyle()
@@ -428,6 +430,20 @@ private struct ClipboardCard: View {
             Text(item.previewText)
                 .previewTextStyle(monospaced: item.kind == .code)
         }
+    }
+}
+
+private struct ImagePreview: View {
+    let image: NSImage
+
+    var body: some View {
+        Image(nsImage: image)
+            .resizable()
+            .scaledToFill()
+            .frame(height: ClipboardCardMetrics.previewHeight)
+            .frame(maxWidth: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .clipped()
     }
 }
 
