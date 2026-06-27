@@ -19,7 +19,8 @@ final class NotchPanelController: NSObject, PanelPresenter {
     private var panel: NSPanel?
 
     var panelFrame: NSRect? {
-        panel?.frame
+        guard panel?.isVisible == true else { return nil }
+        return panel?.frame
     }
 
     init(store: ClipboardStore) {
@@ -70,7 +71,7 @@ final class NotchPanelController: NSObject, PanelPresenter {
         let width = min(max(screen.frame.width - 420, 860), 1280)
         let height: CGFloat = 330
         let x = screen.frame.midX - width / 2
-        let y = screen.frame.maxY - height - 76
+        let y = screen.frame.maxY - height
         return NSRect(x: x, y: y, width: width, height: height)
     }
 }

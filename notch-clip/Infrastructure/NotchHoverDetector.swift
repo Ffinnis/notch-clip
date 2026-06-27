@@ -8,7 +8,6 @@ final class NotchHoverDetector {
     private let panelFrameProvider: () -> NSRect?
     private var timer: Timer?
     private var isHoveringTrigger = false
-    private var pendingHide: DispatchWorkItem?
 
     init(panelFrameProvider: @escaping () -> NSRect?) {
         self.panelFrameProvider = panelFrameProvider
@@ -28,8 +27,6 @@ final class NotchHoverDetector {
     func stop() {
         timer?.invalidate()
         timer = nil
-        pendingHide?.cancel()
-        pendingHide = nil
     }
 
     @objc private func pollTimer() {
@@ -40,8 +37,6 @@ final class NotchHoverDetector {
         }
 
         if isInTriggerZone(location, screen: screen) {
-            pendingHide?.cancel()
-            pendingHide = nil
             if !isHoveringTrigger {
                 isHoveringTrigger = true
                 onHover?(screen)
@@ -49,9 +44,12 @@ final class NotchHoverDetector {
             return
         }
 
-        if let panelFrame = panelFrameProvider(), panelFrame.insetBy(dx: -18, dy: -18).contains(location) {
-            pendingHide?.cancel()
-            pendingHide = nil
+        if let panelFrame = panelFrameProvider() {
+            if panelFrame.contains(location) {
+                return
+            }
+
+            exitIfNeeded(force: true)
             return
         }
 
@@ -61,25 +59,17 @@ final class NotchHoverDetector {
     private func isInTriggerZone(_ location: NSPoint, screen: NSScreen) -> Bool {
         let top = screen.frame.maxY
         let centerX = screen.frame.midX
-        let triggerWidth: CGFloat = min(460, screen.frame.width * 0.28)
-        let triggerHeight: CGFloat = 92
+        let triggerWidth: CGFloat = min(220, screen.frame.width * 0.16)
+        let triggerHeight: CGFloat = 48
 
         return abs(location.x - centerX) <= triggerWidth / 2
             && location.y >= top - triggerHeight
             && location.y <= top
     }
 
-    private func exitIfNeeded() {
-        guard isHoveringTrigger else { return }
+    private func exitIfNeeded(force: Bool = false) {
+        guard force || isHoveringTrigger else { return }
         isHoveringTrigger = false
-
-        pendingHide?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            Task { @MainActor in
-                self?.onExit?()
-            }
-        }
-        pendingHide = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
+        onExit?()
     }
 }

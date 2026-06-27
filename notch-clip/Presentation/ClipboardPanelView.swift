@@ -72,7 +72,7 @@ struct ClipboardPanelView: View {
 
 private struct NotchPanelBackground: View {
     var body: some View {
-        NotchPanelShape(cornerRadius: 22, notchWidth: 132, notchDepth: 18)
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
             .fill(
                 LinearGradient(
                     colors: [
@@ -84,46 +84,10 @@ private struct NotchPanelBackground: View {
                 )
             )
             .overlay(
-                NotchPanelShape(cornerRadius: 22, notchWidth: 132, notchDepth: 18)
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .stroke(Color.white.opacity(0.08), lineWidth: 1)
             )
             .shadow(color: .black.opacity(0.5), radius: 30, y: 18)
-    }
-}
-
-private struct NotchPanelShape: Shape {
-    let cornerRadius: CGFloat
-    let notchWidth: CGFloat
-    let notchDepth: CGFloat
-
-    func path(in rect: CGRect) -> Path {
-        let notchStart = rect.midX - notchWidth / 2
-        let notchEnd = rect.midX + notchWidth / 2
-        let radius = min(cornerRadius, rect.height / 2)
-
-        var path = Path()
-        path.move(to: CGPoint(x: rect.minX + radius, y: rect.minY))
-        path.addLine(to: CGPoint(x: notchStart, y: rect.minY))
-        path.addCurve(
-            to: CGPoint(x: rect.midX, y: rect.minY + notchDepth),
-            control1: CGPoint(x: notchStart + notchWidth * 0.22, y: rect.minY),
-            control2: CGPoint(x: rect.midX - notchWidth * 0.18, y: rect.minY + notchDepth)
-        )
-        path.addCurve(
-            to: CGPoint(x: notchEnd, y: rect.minY),
-            control1: CGPoint(x: rect.midX + notchWidth * 0.18, y: rect.minY + notchDepth),
-            control2: CGPoint(x: notchEnd - notchWidth * 0.22, y: rect.minY)
-        )
-        path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.minY))
-        path.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.minY + radius), control: CGPoint(x: rect.maxX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - radius))
-        path.addQuadCurve(to: CGPoint(x: rect.maxX - radius, y: rect.maxY), control: CGPoint(x: rect.maxX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.maxY))
-        path.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.maxY - radius), control: CGPoint(x: rect.minX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + radius))
-        path.addQuadCurve(to: CGPoint(x: rect.minX + radius, y: rect.minY), control: CGPoint(x: rect.minX, y: rect.minY))
-        path.closeSubpath()
-        return path
     }
 }
 
