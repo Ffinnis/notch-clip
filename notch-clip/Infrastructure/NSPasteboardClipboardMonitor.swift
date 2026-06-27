@@ -29,6 +29,10 @@ final class NSPasteboardClipboardMonitor: ClipboardMonitor {
         timer = nil
     }
 
+    func currentItem(sourceApp: String? = nil) -> ClipboardItem? {
+        ClipboardClassifier.makeItem(representations: captureRepresentations(), sourceApp: sourceApp)
+    }
+
     @objc private func pollTimer() {
         guard pasteboard.changeCount != lastChangeCount else { return }
         lastChangeCount = pasteboard.changeCount

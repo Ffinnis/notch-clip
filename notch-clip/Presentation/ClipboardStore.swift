@@ -4,6 +4,7 @@ import Foundation
 @MainActor
 final class ClipboardStore: ObservableObject {
     @Published private(set) var items: [ClipboardItem] = []
+    @Published private(set) var currentClipboardItem: ClipboardItem?
     @Published var selectedID: ClipboardItem.ID?
     @Published var query = "" {
         didSet { reload() }
@@ -24,10 +25,15 @@ final class ClipboardStore: ObservableObject {
         items.first { $0.id == selectedID } ?? items.first
     }
 
-    func reload() {
+    func reload(preferredContentHash: String? = nil) {
         do {
+            let activeContentHash = preferredContentHash ?? currentClipboardItem?.contentHash
             items = try repository.fetchItems(query: query, filter: filter)
-            if selectedID == nil || !items.contains(where: { $0.id == selectedID }) {
+
+            if let activeContentHash,
+               let activeItem = items.first(where: { $0.contentHash == activeContentHash }) {
+                selectedID = activeItem.id
+            } else if selectedID == nil || !items.contains(where: { $0.id == selectedID }) {
                 selectedID = items.first?.id
             }
         } catch {
@@ -39,9 +45,15 @@ final class ClipboardStore: ObservableObject {
         selectedID = item.id
     }
 
-    func copySelected() {
-        guard let selectedItem else { return }
-        writer.write(selectedItem)
+    func selectAndCopy(_ item: ClipboardItem) {
+        selectedID = item.id
+        currentClipboardItem = item
+        writer.write(item)
+    }
+
+    func markCurrentClipboard(_ item: ClipboardItem) {
+        currentClipboardItem = item
+        reload(preferredContentHash: item.contentHash)
     }
 
     func togglePinSelected() {

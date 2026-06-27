@@ -52,6 +52,9 @@ final class AppCompositionRoot {
 
     func start() {
         store.reload()
+        if let currentItem = monitor.currentItem(sourceApp: NSWorkspace.shared.frontmostApplication?.localizedName) {
+            store.markCurrentClipboard(currentItem)
+        }
 
         monitor.onChange = { [weak self] item in
             self?.capture(item)
@@ -84,7 +87,7 @@ final class AppCompositionRoot {
         do {
             try repository.saveCapturedItem(item)
             try repository.pruneIfNeeded()
-            store.reload()
+            store.markCurrentClipboard(item)
         } catch {
             NSLog("Failed to save clipboard item: \(error)")
         }
