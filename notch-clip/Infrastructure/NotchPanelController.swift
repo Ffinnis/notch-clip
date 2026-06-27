@@ -21,9 +21,10 @@ final class NotchPanelController: NSObject, PanelPresenter {
     private var panel: NSPanel?
     private var currentScreen: NSScreen?
     private var animationGeneration = 0
+    private var isHiding = false
 
     var panelFrame: NSRect? {
-        guard panel?.isVisible == true else { return nil }
+        guard panel?.isVisible == true, !isHiding else { return nil }
         return panel?.frame
     }
 
@@ -40,47 +41,81 @@ final class NotchPanelController: NSObject, PanelPresenter {
         currentScreen = screen
 
         let targetFrame = frame(for: screen)
-        let startFrame = collapsedFrame(for: screen, targetFrame: targetFrame)
         animationGeneration += 1
+        isHiding = false
+        panel.ignoresMouseEvents = false
 
         if panel.isVisible == false {
             transitionState.progress = 0
             panel.alphaValue = 1
-            panel.setFrame(startFrame, display: false)
+            panel.setFrame(targetFrame, display: false)
+            setRevealMask(on: panel, progress: 0)
             panel.makeKeyAndOrderFront(nil)
             panel.orderFrontRegardless()
+        } else if panel.frame != targetFrame {
+            panel.setFrame(targetFrame, display: false)
+            setRevealMask(on: panel, progress: transitionState.progress)
         }
 
         withAnimation(.timingCurve(0.18, 0.9, 0.2, 1, duration: 0.36)) {
             transitionState.progress = 1
         }
-        animate(panel, to: targetFrame, duration: 0.36, timingFunction: .notchPanelShow)
+        animateRevealMask(on: panel, to: 1, duration: 0.36, timingFunction: .notchPanelShow)
     }
 
     func hide(reason: PanelHideReason) {
-        guard let panel, panel.isVisible else { return }
+        guard let panel, panel.isVisible else {
+            isHiding = false
+            return
+        }
+        guard !isHiding else { return }
 
         let screen = currentScreen ?? screen(containing: panel.frame) ?? NSScreen.main ?? NSScreen.screens.first
         guard let screen else {
+            isHiding = false
             panel.orderOut(nil)
             return
         }
 
-        let targetFrame = collapsedFrame(for: screen, targetFrame: frame(for: screen))
+        let targetFrame = frame(for: screen)
         animationGeneration += 1
         let animationGeneration = animationGeneration
+        isHiding = true
+        panel.ignoresMouseEvents = true
+
+        if panel.frame != targetFrame {
+            panel.setFrame(targetFrame, display: false)
+            setRevealMask(on: panel, progress: transitionState.progress)
+        }
 
         withAnimation(.timingCurve(0.35, 0, 0.85, 0.2, duration: 0.24)) {
             transitionState.progress = 0
         }
-        animate(panel, to: targetFrame, duration: 0.24, timingFunction: .notchPanelHide) { [weak self, weak panel] in
-            guard let self, self.animationGeneration == animationGeneration else { return }
-            panel?.orderOut(nil)
+        animateRevealMask(on: panel, to: 0, duration: 0.24, timingFunction: .notchPanelHide)
+
+        scheduleAnimationCompletion(after: 0.24, generation: animationGeneration) { [weak panel] in
+            if let panel {
+                self.setRevealMask(on: panel, progress: 0)
+                panel.ignoresMouseEvents = false
+                panel.orderOut(nil)
+            }
+            self.isHiding = false
+        }
+    }
+
+    private func scheduleAnimationCompletion(
+        after duration: TimeInterval,
+        generation: Int,
+        completion: @MainActor @escaping () -> Void
+    ) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+            guard let self, self.animationGeneration == generation else { return }
+            completion()
         }
     }
 
     func toggle() {
-        if panel?.isVisible == true {
+        if panel?.isVisible == true, !isHiding {
             hide(reason: .userDismissed)
         } else {
             show(anchorScreen: NSScreen.main)
@@ -94,6 +129,10 @@ final class NotchPanelController: NSObject, PanelPresenter {
             backing: .buffered,
             defer: false
         )
+        let hostingView = NSHostingView(rootView: ClipboardPanelView(store: store, transition: transitionState))
+        hostingView.wantsLayer = true
+        hostingView.layer?.drawsAsynchronously = true
+
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -101,7 +140,7 @@ final class NotchPanelController: NSObject, PanelPresenter {
         panel.animationBehavior = .none
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .transient]
-        panel.contentView = NSHostingView(rootView: ClipboardPanelView(store: store, transition: transitionState))
+        panel.contentView = hostingView
         return panel
     }
 
@@ -113,36 +152,104 @@ final class NotchPanelController: NSObject, PanelPresenter {
         return NSRect(x: x, y: y, width: width, height: height)
     }
 
-    private func collapsedFrame(for screen: NSScreen, targetFrame: NSRect) -> NSRect {
-        let width: CGFloat = min(max(targetFrame.width * 0.18, 168), 220)
-        let height: CGFloat = 14
-        return NSRect(
-            x: targetFrame.midX - width / 2,
-            y: screen.frame.maxY - height,
-            width: width,
-            height: height
-        )
-    }
-
     private func screen(containing frame: NSRect) -> NSScreen? {
         NSScreen.screens.first { $0.frame.intersects(frame) }
     }
 
-    private func animate(
-        _ panel: NSPanel,
-        to targetFrame: NSRect,
+    private func setRevealMask(on panel: NSPanel, progress: CGFloat) {
+        guard let contentView = panel.contentView else { return }
+
+        contentView.layoutSubtreeIfNeeded()
+        guard let layer = contentView.layer else { return }
+
+        let maskLayer = revealMaskLayer(for: layer)
+        maskLayer.removeAnimation(forKey: "revealPath")
+        maskLayer.frame = layer.bounds
+        maskLayer.isGeometryFlipped = false
+        maskLayer.path = revealPath(in: layer.bounds, progress: progress)
+    }
+
+    private func animateRevealMask(
+        on panel: NSPanel,
+        to progress: CGFloat,
         duration: TimeInterval,
-        timingFunction: CAMediaTimingFunction,
-        completion: (() -> Void)? = nil
+        timingFunction: CAMediaTimingFunction
     ) {
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = duration
-            context.timingFunction = timingFunction
-            context.allowsImplicitAnimation = true
-            panel.animator().setFrame(targetFrame, display: true)
-        } completionHandler: {
-            completion?()
+        guard let contentView = panel.contentView else { return }
+
+        contentView.layoutSubtreeIfNeeded()
+        guard let layer = contentView.layer else { return }
+
+        let maskLayer = revealMaskLayer(for: layer)
+        maskLayer.frame = layer.bounds
+        maskLayer.isGeometryFlipped = false
+
+        let targetPath = revealPath(in: layer.bounds, progress: progress)
+        let startPath = maskLayer.presentation()?.path
+            ?? maskLayer.path
+            ?? revealPath(in: layer.bounds, progress: transitionState.progress)
+
+        maskLayer.removeAnimation(forKey: "revealPath")
+        maskLayer.path = targetPath
+
+        let animation = CABasicAnimation(keyPath: "path")
+        animation.fromValue = startPath
+        animation.toValue = targetPath
+        animation.duration = duration
+        animation.timingFunction = timingFunction
+        animation.isRemovedOnCompletion = true
+        maskLayer.add(animation, forKey: "revealPath")
+    }
+
+    private func revealMaskLayer(for layer: CALayer) -> CAShapeLayer {
+        if let maskLayer = layer.mask as? CAShapeLayer {
+            return maskLayer
         }
+
+        let maskLayer = CAShapeLayer()
+        maskLayer.fillColor = NSColor.black.cgColor
+        layer.mask = maskLayer
+        return maskLayer
+    }
+
+    private func revealPath(in bounds: CGRect, progress: CGFloat) -> CGPath {
+        let clampedProgress = min(max(progress, 0), 1)
+        let widthProgress = 0.18 + clampedProgress * 0.82
+        let heightProgress = 0.05 + clampedProgress * 0.95
+        let width = bounds.width * widthProgress
+        let height = bounds.height * heightProgress
+        let rect = CGRect(
+            x: bounds.midX - width / 2,
+            y: bounds.minY,
+            width: width,
+            height: height
+        )
+
+        return CGPath.bottomRoundedRect(rect, cornerRadius: 22)
+    }
+}
+
+private extension CGPath {
+    static func bottomRoundedRect(_ rect: CGRect, cornerRadius: CGFloat) -> CGPath {
+        let path = CGMutablePath()
+        let radius = min(cornerRadius, rect.width / 2, rect.height / 2)
+
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - radius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX - radius, y: rect.maxY),
+            control: CGPoint(x: rect.maxX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.maxY - radius),
+            control: CGPoint(x: rect.minX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.closeSubpath()
+
+        return path
     }
 }
 

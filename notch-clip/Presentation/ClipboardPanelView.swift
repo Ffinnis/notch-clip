@@ -27,7 +27,6 @@ struct ClipboardPanelView: View {
             .scaleEffect(0.985 + contentProgress * 0.015, anchor: .top)
         }
         .frame(minWidth: 820, minHeight: 310)
-        .clipShape(NotchRevealShape(progress: transition.progress))
         .preferredColorScheme(.dark)
     }
 
@@ -77,6 +76,7 @@ struct ClipboardPanelView: View {
                                 item: item,
                                 isSelected: store.selectedID == item.id
                             )
+                            .equatable()
                             .onTapGesture {
                                 store.selectAndCopy(item)
                             }
@@ -88,34 +88,6 @@ struct ClipboardPanelView: View {
                 .clipped()
             }
         }
-    }
-}
-
-private struct NotchRevealShape: Shape {
-    var progress: CGFloat
-
-    var animatableData: CGFloat {
-        get { progress }
-        set { progress = newValue }
-    }
-
-    func path(in rect: CGRect) -> Path {
-        let clampedProgress = min(max(progress, 0), 1)
-        let widthProgress = 0.18 + clampedProgress * 0.82
-        let heightProgress = 0.05 + clampedProgress * 0.95
-        let width = rect.width * widthProgress
-        let height = rect.height * heightProgress
-        let revealRect = CGRect(
-            x: rect.midX - width / 2,
-            y: rect.minY,
-            width: width,
-            height: height
-        )
-
-        return Path(
-            bottomRoundedRect: revealRect,
-            cornerRadius: 22
-        )
     }
 }
 
@@ -303,10 +275,16 @@ private struct PanelIconButton: View {
     }
 }
 
-private struct ClipboardCard: View {
+private struct ClipboardCard: View, Equatable {
     let item: ClipboardItem
     let isSelected: Bool
     @State private var isHovered = false
+
+    nonisolated static func == (lhs: ClipboardCard, rhs: ClipboardCard) -> Bool {
+        lhs.item.id == rhs.item.id
+            && lhs.item.isPinned == rhs.item.isPinned
+            && lhs.isSelected == rhs.isSelected
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -385,7 +363,7 @@ private struct ClipboardCard: View {
             .clipped()
 
         case .image(let data):
-            if let image = NSImage(data: data) {
+            if let image = ClipboardPreviewImageCache.shared.image(forData: data, cacheKey: item.contentHash) {
                 ImagePreview(image: image)
             } else {
                 Text(item.previewText)
@@ -393,7 +371,7 @@ private struct ClipboardCard: View {
             }
 
         case .fileURL(let url):
-            if url.isFileURL, let image = NSImage(contentsOf: url) {
+            if url.isFileURL, let image = ClipboardPreviewImageCache.shared.image(forFileURL: url) {
                 ImagePreview(image: image)
             } else {
                 Text(item.previewText)
@@ -444,6 +422,39 @@ private struct ImagePreview: View {
             .frame(maxWidth: .infinity)
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             .clipped()
+    }
+}
+
+private final class ClipboardPreviewImageCache {
+    static let shared = ClipboardPreviewImageCache()
+
+    private let cache = NSCache<NSString, NSImage>()
+
+    private init() {
+        cache.countLimit = 120
+    }
+
+    func image(forData data: Data, cacheKey: String) -> NSImage? {
+        image(forKey: "data:\(cacheKey)") {
+            NSImage(data: data)
+        }
+    }
+
+    func image(forFileURL url: URL) -> NSImage? {
+        image(forKey: "file:\(url.standardizedFileURL.path)") {
+            NSImage(contentsOf: url)
+        }
+    }
+
+    private func image(forKey key: String, loader: () -> NSImage?) -> NSImage? {
+        let cacheKey = key as NSString
+        if let cachedImage = cache.object(forKey: cacheKey) {
+            return cachedImage
+        }
+
+        guard let image = loader() else { return nil }
+        cache.setObject(image, forKey: cacheKey)
+        return image
     }
 }
 
