@@ -1,35 +1,162 @@
-//
-//  notch_clipTests.swift
-//  notch-clipTests
-//
-//  Created by Roman on 27.06.2026.
-//
-
+import SwiftData
 import XCTest
+@testable import notch_clip
 
+@MainActor
 final class notch_clipTests: XCTestCase {
-
-    override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
+    enum TestError: Error {
+        case expected
     }
 
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
-    }
+    func testClassifiesKnownPasteboardTypes() throws {
+        XCTAssertEqual(ClipboardClassifier.classify([text("#1f1f1f")]), .color("#1F1F1F"))
 
-    func testExample() throws {
-        // This is an example of a functional test case.
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // Any test you write for XCTest can be annotated as throws and async.
-        // Mark your test throws to produce an unexpected failure when your test encounters an uncaught error.
-        // Mark your test async to allow awaiting for asynchronous code to complete. Check the results with assertions afterwards.
-    }
-
-    func testPerformanceExample() throws {
-        // This is an example of a performance test case.
-        measure {
-            // Put the code you want to measure the time of here.
+        let urlContent = ClipboardClassifier.classify([text("https://chatgpt.com/")])
+        if case .url(let url, _) = urlContent {
+            XCTAssertEqual(url.absoluteString, "https://chatgpt.com/")
+        } else {
+            XCTFail("Expected URL content")
         }
+
+        let codeContent = ClipboardClassifier.classify([text("function update() { return true; }")])
+        if case .code(let code, let language) = codeContent {
+            XCTAssertEqual(code, "function update() { return true; }")
+            XCTAssertEqual(language, "JavaScript")
+        } else {
+            XCTFail("Expected code content")
+        }
+
+        let imageContent = ClipboardClassifier.classify([
+            PasteboardRepresentation(itemIndex: 0, type: "public.png", data: Data([0x89, 0x50, 0x4E, 0x47]))
+        ])
+        if case .image(let data) = imageContent {
+            XCTAssertEqual(data.count, 4)
+        } else {
+            XCTFail("Expected image content")
+        }
+
+        let fileContent = ClipboardClassifier.classify([
+            representation(type: "public.file-url", string: "file:///Users/roman/Desktop/example.png")
+        ])
+        if case .fileURL(let url) = fileContent {
+            XCTAssertEqual(url.lastPathComponent, "example.png")
+        } else {
+            XCTFail("Expected file URL content")
+        }
+
+        let rawContent = ClipboardClassifier.classify([
+            PasteboardRepresentation(itemIndex: 0, type: "com.example.custom", data: Data([1, 2, 3]))
+        ])
+        XCTAssertEqual(rawContent, .raw(type: "com.example.custom", byteCount: 3))
     }
 
+    func testClassifiesUTF16PasteboardTextTypes() throws {
+        let urlContent = ClipboardClassifier.classify([
+            representation(type: "public.utf16-plain-text", string: "https://example.com/docs", encoding: .utf16LittleEndian)
+        ])
+        if case .url(let url, _) = urlContent {
+            XCTAssertEqual(url.absoluteString, "https://example.com/docs")
+        } else {
+            XCTFail("Expected UTF-16 URL content")
+        }
+
+        let codeContent = ClipboardClassifier.classify([
+            representation(type: "public.utf16-plain-text", string: "func update() { return true }", encoding: .utf16)
+        ])
+        if case .code(let code, let language) = codeContent {
+            XCTAssertEqual(code, "func update() { return true }")
+            XCTAssertEqual(language, "Swift")
+        } else {
+            XCTFail("Expected UTF-16 code content")
+        }
+
+        let colorContent = ClipboardClassifier.classify([
+            representation(type: "public.utf16-plain-text", string: "#00ffaa", encoding: .utf16BigEndian)
+        ])
+        XCTAssertEqual(colorContent, .color("#00FFAA"))
+    }
+
+    func testClassifiesLegacyStringPasteboardType() throws {
+        let content = ClipboardClassifier.classify([
+            representation(type: "NSStringPboardType", string: "Legacy text")
+        ])
+        XCTAssertEqual(content, .text("Legacy text"))
+    }
+
+    func testRepositoryDeduplicatesPinsSearchesAndDeletes() throws {
+        let repository = try makeRepository()
+        let firstItem = try XCTUnwrap(
+            ClipboardClassifier.makeItem(representations: [text("Needle note")], sourceApp: "Notes")
+        )
+
+        try repository.saveCapturedItem(firstItem)
+        try repository.saveCapturedItem(firstItem)
+
+        XCTAssertEqual(try repository.fetchItems(query: "", filter: .history).count, 1)
+        XCTAssertEqual(try repository.fetchItems(query: "needle", filter: .history).map(\.id), [firstItem.id])
+
+        try repository.setPinned(id: firstItem.id, isPinned: true)
+        let pins = try repository.fetchItems(query: "", filter: .pins)
+        XCTAssertEqual(pins.count, 1)
+        XCTAssertTrue(try XCTUnwrap(pins.first).isPinned)
+
+        try repository.delete(id: firstItem.id)
+        XCTAssertTrue(try repository.fetchItems(query: "", filter: .history).isEmpty)
+    }
+
+    func testCompositionRootFallsBackToInMemorySwiftDataRepository() throws {
+        let repository = AppCompositionRoot.makeRepository(
+            persistentContainer: {
+                throw TestError.expected
+            },
+            inMemoryContainer: {
+                try makeModelContainer(isStoredInMemoryOnly: true)
+            }
+        )
+
+        XCTAssertTrue(repository is SwiftDataClipboardRepository)
+    }
+
+    func testCompositionRootFallsBackToVolatileRepository() throws {
+        let repository = AppCompositionRoot.makeRepository(
+            persistentContainer: {
+                throw TestError.expected
+            },
+            inMemoryContainer: {
+                throw TestError.expected
+            }
+        )
+
+        XCTAssertTrue(repository is InMemoryClipboardRepository)
+    }
+
+    private func makeRepository() throws -> SwiftDataClipboardRepository {
+        let container = try makeModelContainer(isStoredInMemoryOnly: true)
+        return SwiftDataClipboardRepository(container: container, maxItems: 10)
+    }
+
+    private func makeModelContainer(isStoredInMemoryOnly: Bool) throws -> ModelContainer {
+        let schema = Schema([
+            StoredClipboardItem.self,
+            StoredPasteboardRepresentation.self
+        ])
+        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: isStoredInMemoryOnly)
+        return try ModelContainer(for: schema, configurations: [configuration])
+    }
+
+    private func text(_ string: String) -> PasteboardRepresentation {
+        representation(type: "public.utf8-plain-text", string: string)
+    }
+
+    private func representation(type: String, string: String) -> PasteboardRepresentation {
+        representation(type: type, string: string, encoding: .utf8)
+    }
+
+    private func representation(
+        type: String,
+        string: String,
+        encoding: String.Encoding
+    ) -> PasteboardRepresentation {
+        PasteboardRepresentation(itemIndex: 0, type: type, data: string.data(using: encoding) ?? Data())
+    }
 }

@@ -1,0 +1,108 @@
+import AppKit
+import SwiftData
+
+@MainActor
+final class AppCompositionRoot {
+    private let repository: ClipboardRepository
+    private let writer: ClipboardWriter
+    private let monitor: NSPasteboardClipboardMonitor
+    private let store: ClipboardStore
+    private let panelController: NotchPanelController
+    private let hoverDetector: NotchHoverDetector
+    private let statusItemController: StatusItemController
+
+    init() {
+        let repository = Self.makeRepository()
+        let writer = NSPasteboardClipboardWriter()
+        let store = ClipboardStore(repository: repository, writer: writer)
+        let panelController = NotchPanelController(store: store)
+        let hoverDetector = NotchHoverDetector(
+            panelFrameProvider: { [weak panelController] in
+                panelController?.panelFrame
+            }
+        )
+        let statusItemController = StatusItemController()
+
+        self.repository = repository
+        self.writer = writer
+        self.monitor = NSPasteboardClipboardMonitor()
+        self.store = store
+        self.panelController = panelController
+        self.hoverDetector = hoverDetector
+        self.statusItemController = statusItemController
+    }
+
+    static func makeRepository(
+        persistentContainer: () throws -> ModelContainer = makePersistentModelContainer,
+        inMemoryContainer: () throws -> ModelContainer = makeInMemoryModelContainer
+    ) -> ClipboardRepository {
+        do {
+            return SwiftDataClipboardRepository(container: try persistentContainer())
+        } catch {
+            NSLog("Could not create persistent clipboard store: \(error). Falling back to in-memory SwiftData.")
+        }
+
+        do {
+            return SwiftDataClipboardRepository(container: try inMemoryContainer())
+        } catch {
+            NSLog("Could not create in-memory SwiftData clipboard store: \(error). Falling back to volatile memory.")
+            return InMemoryClipboardRepository()
+        }
+    }
+
+    func start() {
+        store.reload()
+
+        monitor.onChange = { [weak self] item in
+            self?.capture(item)
+        }
+        monitor.start()
+
+        hoverDetector.onHover = { [weak self] screen in
+            self?.panelController.show(anchorScreen: screen)
+        }
+        hoverDetector.onExit = { [weak self] in
+            self?.panelController.hide(reason: .hoverExited)
+        }
+        hoverDetector.start()
+
+        statusItemController.onShow = { [weak self] in
+            self?.panelController.show(anchorScreen: NSScreen.main)
+        }
+        statusItemController.onQuit = {
+            NSApp.terminate(nil)
+        }
+        statusItemController.install()
+    }
+
+    func stop() {
+        monitor.stop()
+        hoverDetector.stop()
+    }
+
+    private func capture(_ item: ClipboardItem) {
+        do {
+            try repository.saveCapturedItem(item)
+            try repository.pruneIfNeeded()
+            store.reload()
+        } catch {
+            NSLog("Failed to save clipboard item: \(error)")
+        }
+    }
+
+    private static func makePersistentModelContainer() throws -> ModelContainer {
+        try ModelContainer(
+            for: StoredClipboardItem.self,
+            StoredPasteboardRepresentation.self
+        )
+    }
+
+    private static func makeInMemoryModelContainer() throws -> ModelContainer {
+        let schema = Schema([
+            StoredClipboardItem.self,
+            StoredPasteboardRepresentation.self
+        ])
+        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        return try ModelContainer(for: schema, configurations: [configuration])
+    }
+}

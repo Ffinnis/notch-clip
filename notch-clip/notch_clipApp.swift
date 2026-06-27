@@ -1,32 +1,13 @@
-//
-//  notch_clipApp.swift
-//  notch-clip
-//
-//  Created by Roman on 27.06.2026.
-//
-
+import AppKit
 import SwiftUI
-import SwiftData
 
 @main
-struct notch_clipApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
+struct NotchClipApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        Settings {
+            EmptyView()
         }
-        .modelContainer(sharedModelContainer)
     }
 }
