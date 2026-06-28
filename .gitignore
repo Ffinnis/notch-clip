@@ -1,0 +1,31 @@
+# Xcode
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+xcuserdata/
+
+# Build output
+build/
+Archives/
+*.xcarchive
+*.dSYM
+*.app
+*.ipa
+*.pkg
+*.zip
+
+# Swift Package Manager
+.build/
+
+# macOS
+.DS_Store
+
+# Local secrets
+.env
+.env.*
+*.p12
+*.mobileprovision
+*.provisionprofile
+sparkle-private-key*
+notch-clip-sparkle-private-key*

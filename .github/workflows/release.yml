@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/notch-clip-signing.keychain-db"
+
+          echo "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+      - name: Archive app
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project notch-clip.xcodeproj \
+            -scheme notch-clip \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/notch-clip.xcarchive" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM=W3Q4RRN5YA \
+            CODE_SIGN_IDENTITY="Developer ID Application"
+
+      - name: Export Developer ID app
+        run: |
+          set -euo pipefail
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/notch-clip.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist ci/ExportOptions.plist
+
+      - name: Notarize and staple
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          APP_PATH="$RUNNER_TEMP/export/notch-clip.app"
+          NOTARY_ZIP="$RUNNER_TEMP/notch-clip-notary.zip"
+          API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+
+          echo "$APPLE_API_KEY_P8_BASE64" | base64 --decode > "$API_KEY_PATH"
+          ditto -c -k --keepParent "$APP_PATH" "$NOTARY_ZIP"
+          xcrun notarytool submit "$NOTARY_ZIP" \
+            --key "$API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait
+          xcrun stapler staple "$APP_PATH"
+
+      - name: Package release archive
+        id: package
+        run: |
+          set -euo pipefail
+          RELEASE_DIR="$RUNNER_TEMP/release"
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARCHIVE_NAME="Notch-Clip-${GITHUB_REF_NAME}.zip"
+          mkdir -p "$RELEASE_DIR"
+
+          ditto -c -k --keepParent "$RUNNER_TEMP/export/notch-clip.app" "$RELEASE_DIR/$ARCHIVE_NAME"
+          cat > "$RELEASE_DIR/Notch-Clip-${GITHUB_REF_NAME}.md" <<EOF
+          # Notch Clip $VERSION
+
+          See the GitHub release notes for changes in this version.
+          EOF
+
+          echo "release_dir=$RELEASE_DIR" >> "$GITHUB_OUTPUT"
+          echo "archive_path=$RELEASE_DIR/$ARCHIVE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Download Sparkle tools
+        run: |
+          set -euo pipefail
+          curl -L -o "$RUNNER_TEMP/Sparkle-2.9.3.tar.xz" https://github.com/sparkle-project/Sparkle/releases/download/2.9.3/Sparkle-2.9.3.tar.xz
+          tar -xf "$RUNNER_TEMP/Sparkle-2.9.3.tar.xz" -C "$RUNNER_TEMP"
+
+      - name: Generate Sparkle appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          printf "%s" "$SPARKLE_PRIVATE_KEY" | "$RUNNER_TEMP/bin/generate_appcast" \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/Ffinnis/notch-clip/releases/download/${GITHUB_REF_NAME}/" \
+            --maximum-versions 1 \
+            "${{ steps.package.outputs.release_dir }}"
+
+          mkdir -p public
+          cp "${{ steps.package.outputs.release_dir }}/appcast.xml" public/appcast.xml
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            "${{ steps.package.outputs.archive_path }}" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Automated Notch Clip release for $GITHUB_REF_NAME."
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload appcast artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy appcast to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

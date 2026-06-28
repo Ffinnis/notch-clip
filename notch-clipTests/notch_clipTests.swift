@@ -179,6 +179,22 @@ final class notch_clipTests: XCTestCase {
         XCTAssertFalse(store.hasMoreVisibleItems)
     }
 
+    func testStatusMenuIncludesCheckForUpdatesAction() throws {
+        let controller = StatusItemController()
+        var didCheckForUpdates = false
+        controller.onCheckForUpdates = {
+            didCheckForUpdates = true
+        }
+
+        let menu = controller.makeMenu()
+        let updateItem = try XCTUnwrap(menu.items.first { $0.title == "Check for Updates..." })
+
+        XCTAssertNotNil(updateItem.action)
+        XCTAssertTrue(updateItem.target === controller)
+        _ = updateItem.target?.perform(updateItem.action, with: updateItem)
+        XCTAssertTrue(didCheckForUpdates)
+    }
+
     func testCompositionRootFallsBackToInMemorySwiftDataRepository() throws {
         let repository = AppCompositionRoot.makeRepository(
             persistentContainer: {

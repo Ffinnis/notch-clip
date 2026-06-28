@@ -1,0 +1,16 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit-tests:
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run unit tests
+        run: xcodebuild test -project notch-clip.xcodeproj -scheme notch-clip -destination 'platform=macOS' -only-testing:notch-clipTests

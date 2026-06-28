@@ -9,6 +9,7 @@ final class AppCompositionRoot {
     private let store: ClipboardStore
     private let panelController: NotchPanelController
     private let hoverDetector: NotchHoverDetector
+    private let updater: AppUpdater
     private let statusItemController: StatusItemController
     private var cleanupTimer: Timer?
 
@@ -24,6 +25,7 @@ final class AppCompositionRoot {
                 panelController?.panelFrame
             }
         )
+        let updater = AppUpdater()
         let statusItemController = StatusItemController()
 
         self.repository = repository
@@ -32,6 +34,7 @@ final class AppCompositionRoot {
         self.store = store
         self.panelController = panelController
         self.hoverDetector = hoverDetector
+        self.updater = updater
         self.statusItemController = statusItemController
     }
 
@@ -76,6 +79,9 @@ final class AppCompositionRoot {
 
         statusItemController.onShow = { [weak self] in
             self?.panelController.show(anchorScreen: NSScreen.main)
+        }
+        statusItemController.onCheckForUpdates = { [weak self] in
+            self?.updater.checkForUpdates()
         }
         statusItemController.onQuit = {
             NSApp.terminate(nil)
