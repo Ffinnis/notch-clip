@@ -7,7 +7,7 @@ Notch Clip is a macOS menu-bar clipboard history app that appears from the notch
 Open `notch-clip.xcodeproj` in Xcode or run the unit tests from the command line:
 
 ```sh
-rtk xcodebuild test -project notch-clip.xcodeproj -scheme notch-clip -destination 'platform=macOS' -only-testing:notch-clipTests
+rtk xcodebuild test -project notch-clip.xcodeproj -scheme notch-clip -destination 'platform=macOS' -only-testing:notch-clipTests CODE_SIGNING_ALLOWED=NO
 ```
 
 The full scheme currently includes UI tests that may fail to bootstrap on local macOS runners. CI runs the unit test target only.

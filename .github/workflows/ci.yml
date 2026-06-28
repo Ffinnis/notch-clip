@@ -13,4 +13,4 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run unit tests
-        run: xcodebuild test -project notch-clip.xcodeproj -scheme notch-clip -destination 'platform=macOS' -only-testing:notch-clipTests
+        run: xcodebuild test -project notch-clip.xcodeproj -scheme notch-clip -destination 'platform=macOS' -only-testing:notch-clipTests CODE_SIGNING_ALLOWED=NO
