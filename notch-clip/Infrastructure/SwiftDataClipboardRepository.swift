@@ -1,6 +1,10 @@
 import Foundation
 import SwiftData
 
+private enum ClipboardRetention {
+    nonisolated static let defaultMaxUnpinnedItemAge: TimeInterval = 7 * 24 * 60 * 60
+}
+
 @Model
 final class StoredClipboardItem {
     var id: UUID
@@ -48,10 +52,16 @@ final class StoredPasteboardRepresentation {
 final class SwiftDataClipboardRepository: ClipboardRepository {
     private let context: ModelContext
     private let maxItems: Int
+    private let maxUnpinnedItemAge: TimeInterval
 
-    init(container: ModelContainer, maxItems: Int = 250) {
+    init(
+        container: ModelContainer,
+        maxItems: Int = 250,
+        maxUnpinnedItemAge: TimeInterval = ClipboardRetention.defaultMaxUnpinnedItemAge
+    ) {
         self.context = ModelContext(container)
         self.maxItems = maxItems
+        self.maxUnpinnedItemAge = maxUnpinnedItemAge
     }
 
     func fetchItems(query: String, filter: ClipboardFilter) throws -> [ClipboardItem] {
@@ -101,19 +111,30 @@ final class SwiftDataClipboardRepository: ClipboardRepository {
         try context.save()
     }
 
-    func pruneIfNeeded() throws {
+    func pruneIfNeeded(now: Date) throws {
         let descriptor = FetchDescriptor<StoredClipboardItem>(
             sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
         )
         let allItems = try context.fetch(descriptor)
-        let removable = allItems.filter { !$0.isPinned }
-        guard removable.count > maxItems else { return }
+        let expirationDate = now.addingTimeInterval(-maxUnpinnedItemAge)
+        var deletedIDs = Set<UUID>()
 
+        for item in allItems where !item.isPinned && item.createdAt < expirationDate {
+            deletedIDs.insert(item.id)
+            context.delete(item)
+        }
+
+        let removable = allItems.filter { !$0.isPinned && !deletedIDs.contains($0.id) }
         removable
             .dropFirst(maxItems)
-            .forEach(context.delete)
+            .forEach { item in
+                deletedIDs.insert(item.id)
+                context.delete(item)
+            }
 
-        try context.save()
+        if !deletedIDs.isEmpty {
+            try context.save()
+        }
     }
 
     private func existingItem(id: UUID) throws -> StoredClipboardItem? {
@@ -173,9 +194,11 @@ final class SwiftDataClipboardRepository: ClipboardRepository {
 final class InMemoryClipboardRepository: ClipboardRepository {
     private var items: [ClipboardItem] = []
     private let maxItems: Int
+    private let maxUnpinnedItemAge: TimeInterval
 
-    init(maxItems: Int = 250) {
+    init(maxItems: Int = 250, maxUnpinnedItemAge: TimeInterval = ClipboardRetention.defaultMaxUnpinnedItemAge) {
         self.maxItems = maxItems
+        self.maxUnpinnedItemAge = maxUnpinnedItemAge
     }
 
     func fetchItems(query: String, filter: ClipboardFilter) throws -> [ClipboardItem] {
@@ -213,13 +236,22 @@ final class InMemoryClipboardRepository: ClipboardRepository {
         items[index].isPinned = isPinned
     }
 
-    func pruneIfNeeded() throws {
+    func pruneIfNeeded(now: Date) throws {
+        let expirationDate = now.addingTimeInterval(-maxUnpinnedItemAge)
+        var removableIDs = Set(
+            items
+                .filter { !$0.isPinned && $0.createdAt < expirationDate }
+                .map(\.id)
+        )
+
         let removable = items
             .sorted { $0.createdAt > $1.createdAt }
-            .filter { !$0.isPinned }
-        guard removable.count > maxItems else { return }
+            .filter { !$0.isPinned && !removableIDs.contains($0.id) }
 
-        let removableIDs = Set(removable.dropFirst(maxItems).map(\.id))
-        items.removeAll { removableIDs.contains($0.id) }
+        removableIDs.formUnion(removable.dropFirst(maxItems).map(\.id))
+
+        if !removableIDs.isEmpty {
+            items.removeAll { removableIDs.contains($0.id) }
+        }
     }
 }

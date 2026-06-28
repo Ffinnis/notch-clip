@@ -114,6 +114,16 @@ final class notch_clipTests: XCTestCase {
         XCTAssertTrue(try repository.fetchItems(query: "", filter: .history).isEmpty)
     }
 
+    func testSwiftDataRepositoryPrunesExpiredUnpinnedItemsButKeepsPinnedItems() throws {
+        try assertRepositoryPrunesExpiredUnpinnedItemsButKeepsPinnedItems(repository: makeRepository())
+    }
+
+    func testInMemoryRepositoryPrunesExpiredUnpinnedItemsButKeepsPinnedItems() throws {
+        try assertRepositoryPrunesExpiredUnpinnedItemsButKeepsPinnedItems(
+            repository: InMemoryClipboardRepository(maxItems: 10)
+        )
+    }
+
     func testClipboardWriterSkipsInternalPreviewRepresentations() throws {
         let pasteboard = NSPasteboard(name: NSPasteboard.Name("notch-clip-tests-\(UUID().uuidString)"))
         let writer = NSPasteboardClipboardWriter(pasteboard: pasteboard)
@@ -200,6 +210,31 @@ final class notch_clipTests: XCTestCase {
         return SwiftDataClipboardRepository(container: container, maxItems: 10)
     }
 
+    private func assertRepositoryPrunesExpiredUnpinnedItemsButKeepsPinnedItems(
+        repository: ClipboardRepository
+    ) throws {
+        let day: TimeInterval = 24 * 60 * 60
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let expiredItem = try item("Expired", date: now.addingTimeInterval(-8 * day))
+        let boundaryItem = try item("Boundary", date: now.addingTimeInterval(-7 * day))
+        let freshItem = try item("Fresh", date: now.addingTimeInterval(-2 * day))
+        let pinnedExpiredItem = try item("Pinned expired", date: now.addingTimeInterval(-9 * day))
+
+        try repository.saveCapturedItem(expiredItem)
+        try repository.saveCapturedItem(boundaryItem)
+        try repository.saveCapturedItem(freshItem)
+        try repository.saveCapturedItem(pinnedExpiredItem)
+        try repository.setPinned(id: pinnedExpiredItem.id, isPinned: true)
+
+        try repository.pruneIfNeeded(now: now)
+
+        let remainingIDs = Set(try repository.fetchItems(query: "", filter: .history).map(\.id))
+        XCTAssertFalse(remainingIDs.contains(expiredItem.id))
+        XCTAssertTrue(remainingIDs.contains(boundaryItem.id))
+        XCTAssertTrue(remainingIDs.contains(freshItem.id))
+        XCTAssertTrue(remainingIDs.contains(pinnedExpiredItem.id))
+    }
+
     private func makeModelContainer(isStoredInMemoryOnly: Bool) throws -> ModelContainer {
         let schema = Schema([
             StoredClipboardItem.self,
@@ -211,6 +246,16 @@ final class notch_clipTests: XCTestCase {
 
     private func text(_ string: String) -> PasteboardRepresentation {
         representation(type: "public.utf8-plain-text", string: string)
+    }
+
+    private func item(_ string: String, date: Date) throws -> ClipboardItem {
+        try XCTUnwrap(
+            ClipboardClassifier.makeItem(
+                representations: [text(string)],
+                sourceApp: "Tests",
+                date: date
+            )
+        )
     }
 
     private func representation(type: String, string: String) -> PasteboardRepresentation {

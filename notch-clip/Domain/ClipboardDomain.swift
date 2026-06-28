@@ -201,7 +201,13 @@ protocol ClipboardRepository {
     func saveCapturedItem(_ item: ClipboardItem) throws
     func delete(id: UUID) throws
     func setPinned(id: UUID, isPinned: Bool) throws
-    func pruneIfNeeded() throws
+    func pruneIfNeeded(now: Date) throws
+}
+
+extension ClipboardRepository {
+    func pruneIfNeeded() throws {
+        try pruneIfNeeded(now: Date())
+    }
 }
 
 @MainActor

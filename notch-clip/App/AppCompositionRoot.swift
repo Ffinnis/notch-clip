@@ -10,6 +10,9 @@ final class AppCompositionRoot {
     private let panelController: NotchPanelController
     private let hoverDetector: NotchHoverDetector
     private let statusItemController: StatusItemController
+    private var cleanupTimer: Timer?
+
+    private static let cleanupInterval: TimeInterval = 60 * 60
 
     init() {
         let repository = Self.makeRepository()
@@ -33,8 +36,8 @@ final class AppCompositionRoot {
     }
 
     static func makeRepository(
-        persistentContainer: () throws -> ModelContainer = makePersistentModelContainer,
-        inMemoryContainer: () throws -> ModelContainer = makeInMemoryModelContainer
+        persistentContainer: @MainActor () throws -> ModelContainer = makePersistentModelContainer,
+        inMemoryContainer: @MainActor () throws -> ModelContainer = makeInMemoryModelContainer
     ) -> ClipboardRepository {
         do {
             return SwiftDataClipboardRepository(container: try persistentContainer())
@@ -51,10 +54,12 @@ final class AppCompositionRoot {
     }
 
     func start() {
+        cleanupClipboardHistory()
         store.reload()
         if let currentItem = monitor.currentItem(sourceApp: NSWorkspace.shared.frontmostApplication?.localizedName) {
             store.markCurrentClipboard(currentItem)
         }
+        scheduleClipboardCleanup()
 
         monitor.onChange = { [weak self] item in
             self?.capture(item)
@@ -79,6 +84,8 @@ final class AppCompositionRoot {
     }
 
     func stop() {
+        cleanupTimer?.invalidate()
+        cleanupTimer = nil
         monitor.stop()
         hoverDetector.stop()
     }
@@ -90,6 +97,27 @@ final class AppCompositionRoot {
             store.markCurrentClipboard(item)
         } catch {
             NSLog("Failed to save clipboard item: \(error)")
+        }
+    }
+
+    private func scheduleClipboardCleanup() {
+        cleanupTimer?.invalidate()
+        cleanupTimer = Timer.scheduledTimer(withTimeInterval: Self.cleanupInterval, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                self.cleanupClipboardHistory(reloadStore: true)
+            }
+        }
+    }
+
+    private func cleanupClipboardHistory(reloadStore: Bool = false) {
+        do {
+            try repository.pruneIfNeeded()
+            if reloadStore {
+                store.reload(preserveVisiblePage: true)
+            }
+        } catch {
+            NSLog("Failed to clean up clipboard history: \(error)")
         }
     }
 
