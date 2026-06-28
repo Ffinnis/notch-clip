@@ -1,3 +1,4 @@
+import AppKit
 import SwiftData
 import XCTest
 @testable import notch_clip
@@ -33,6 +34,15 @@ final class notch_clipTests: XCTestCase {
             XCTAssertEqual(data.count, 4)
         } else {
             XCTFail("Expected image content")
+        }
+
+        let pdfContent = ClipboardClassifier.classify([
+            PasteboardRepresentation(itemIndex: 0, type: "com.adobe.pdf", data: Data([0x25, 0x50, 0x44, 0x46]))
+        ])
+        if case .pdf(let data) = pdfContent {
+            XCTAssertEqual(data.count, 4)
+        } else {
+            XCTFail("Expected PDF content")
         }
 
         let fileContent = ClipboardClassifier.classify([
@@ -104,6 +114,61 @@ final class notch_clipTests: XCTestCase {
         XCTAssertTrue(try repository.fetchItems(query: "", filter: .history).isEmpty)
     }
 
+    func testClipboardWriterSkipsInternalPreviewRepresentations() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("notch-clip-tests-\(UUID().uuidString)"))
+        let writer = NSPasteboardClipboardWriter(pasteboard: pasteboard)
+        let item = try XCTUnwrap(
+            ClipboardClassifier.makeItem(
+                representations: [
+                    text("Copy me"),
+                    PasteboardRepresentation(
+                        itemIndex: 0,
+                        type: ClipboardTypeIdentifier.filePreviewData,
+                        data: Data([1, 2, 3])
+                    )
+                ],
+                sourceApp: "Tests"
+            )
+        )
+
+        writer.write(item)
+
+        let pasteboardItem = try XCTUnwrap(pasteboard.pasteboardItems?.first)
+        XCTAssertEqual(pasteboardItem.string(forType: .string), "Copy me")
+        XCTAssertNil(
+            pasteboardItem.data(forType: NSPasteboard.PasteboardType(ClipboardTypeIdentifier.filePreviewData))
+        )
+    }
+
+    func testStoreVirtualizesVisibleHistoryItems() throws {
+        let repository = InMemoryClipboardRepository(maxItems: 100)
+        let writer = CapturingClipboardWriter()
+        let store = ClipboardStore(repository: repository, writer: writer)
+
+        for index in 0..<35 {
+            let item = try XCTUnwrap(
+                ClipboardClassifier.makeItem(
+                    representations: [text("History item \(index)")],
+                    sourceApp: "Tests",
+                    date: Date(timeIntervalSince1970: TimeInterval(index))
+                )
+            )
+            try repository.saveCapturedItem(item)
+        }
+
+        store.reload()
+
+        XCTAssertEqual(store.items.count, 35)
+        XCTAssertEqual(store.visibleItems.count, 24)
+        XCTAssertTrue(store.hasMoreVisibleItems)
+
+        let lastVisibleItem = try XCTUnwrap(store.visibleItems.last)
+        store.loadMoreItemsIfNeeded(currentItem: lastVisibleItem)
+
+        XCTAssertEqual(store.visibleItems.count, 35)
+        XCTAssertFalse(store.hasMoreVisibleItems)
+    }
+
     func testCompositionRootFallsBackToInMemorySwiftDataRepository() throws {
         let repository = AppCompositionRoot.makeRepository(
             persistentContainer: {
@@ -158,5 +223,14 @@ final class notch_clipTests: XCTestCase {
         encoding: String.Encoding
     ) -> PasteboardRepresentation {
         PasteboardRepresentation(itemIndex: 0, type: type, data: string.data(using: encoding) ?? Data())
+    }
+}
+
+@MainActor
+private final class CapturingClipboardWriter: ClipboardWriter {
+    private(set) var writtenItems: [ClipboardItem] = []
+
+    func write(_ item: ClipboardItem) {
+        writtenItems.append(item)
     }
 }

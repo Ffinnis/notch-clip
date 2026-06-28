@@ -14,7 +14,7 @@ final class NSPasteboardClipboardWriter: ClipboardWriter {
         let grouped = Dictionary(grouping: item.representations, by: \.itemIndex)
         let pasteboardItems = grouped.keys.sorted().map { index in
             let pasteboardItem = NSPasteboardItem()
-            grouped[index]?.forEach { representation in
+            grouped[index]?.filter { !ClipboardTypeIdentifier.isInternal($0.type) }.forEach { representation in
                 pasteboardItem.setData(
                     representation.data,
                     forType: NSPasteboard.PasteboardType(representation.type)

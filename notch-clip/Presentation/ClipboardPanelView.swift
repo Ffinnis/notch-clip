@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import ImageIO
 import SwiftUI
 
 @MainActor
@@ -69,20 +70,35 @@ struct ClipboardPanelView: View {
             if store.items.isEmpty {
                 EmptyClipboardView()
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) {
-                        ForEach(store.items) { item in
-                            ClipboardCard(
-                                item: item,
-                                isSelected: store.selectedID == item.id
-                            )
-                            .equatable()
-                            .onTapGesture {
-                                store.selectAndCopy(item)
+                GeometryReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyHStack(spacing: 12) {
+                            ForEach(store.visibleItems) { item in
+                                ClipboardCard(
+                                    item: item,
+                                    isSelected: store.selectedID == item.id,
+                                    scrollViewportWidth: proxy.size.width
+                                )
+                                .equatable()
+                                .onTapGesture {
+                                    store.selectAndCopy(item)
+                                }
+                                .onAppear {
+                                    store.loadMoreItemsIfNeeded(currentItem: item)
+                                }
+                            }
+
+                            if store.hasMoreVisibleItems {
+                                Color.clear
+                                    .frame(width: 1, height: ClipboardCardMetrics.height)
+                                    .onAppear {
+                                        store.loadNextVirtualPage()
+                                    }
                             }
                         }
+                        .padding(.vertical, 5)
                     }
-                    .padding(.vertical, 5)
+                    .coordinateSpace(name: ClipboardHistoryLayout.coordinateSpaceName)
                 }
                 .frame(maxWidth: .infinity, maxHeight: 166)
                 .clipped()
@@ -163,7 +179,7 @@ private struct CurrentClipboardValueView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: item?.kind.symbolName ?? "clipboard")
+            Image(systemName: item?.displaySymbolName ?? "clipboard")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.72))
                 .frame(width: 18)
@@ -278,22 +294,25 @@ private struct PanelIconButton: View {
 private struct ClipboardCard: View, Equatable {
     let item: ClipboardItem
     let isSelected: Bool
+    let scrollViewportWidth: CGFloat
     @State private var isHovered = false
+    @State private var isPreviewInVisibleArea = false
 
     nonisolated static func == (lhs: ClipboardCard, rhs: ClipboardCard) -> Bool {
         lhs.item.id == rhs.item.id
             && lhs.item.isPinned == rhs.item.isPinned
             && lhs.isSelected == rhs.isSelected
+            && lhs.scrollViewportWidth == rhs.scrollViewportWidth
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 7) {
-                Image(systemName: item.kind.symbolName)
+                Image(systemName: item.displaySymbolName)
                     .font(.system(size: 13, weight: .semibold))
                     .frame(width: 16)
 
-                Text(item.kind.title)
+                Text(item.displayKindTitle)
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -313,7 +332,7 @@ private struct ClipboardCard: View, Equatable {
                     .frame(width: ClipboardCardMetrics.footerIconWidth)
                     .accessibilityHidden(!item.isPinned)
 
-                Text(item.sourceApp ?? item.kind.title)
+                Text(item.sourceApp ?? item.displayKindTitle)
                     .lineLimit(1)
                     .truncationMode(.middle)
 
@@ -345,6 +364,12 @@ private struct ClipboardCard: View, Equatable {
         .animation(.spring(response: 0.22, dampingFraction: 0.88), value: isHovered)
         .animation(.spring(response: 0.22, dampingFraction: 0.88), value: isSelected)
         .onHover { isHovered = $0 }
+        .background(
+            ScrollAreaVisibilityReader(
+                viewportWidth: scrollViewportWidth,
+                isVisible: $isPreviewInVisibleArea
+            )
+        )
     }
 
     @ViewBuilder
@@ -363,16 +388,30 @@ private struct ClipboardCard: View, Equatable {
             .clipped()
 
         case .image(let data):
-            if let image = ClipboardPreviewImageCache.shared.image(forData: data, cacheKey: item.contentHash) {
-                ImagePreview(image: image)
-            } else {
-                Text(item.previewText)
-                    .previewTextStyle()
-            }
+            LazyImagePreview(
+                request: .data(data, kind: .image, cacheKey: item.contentHash),
+                placeholder: .text(item.previewText),
+                isVisible: isPreviewInVisibleArea
+            )
+
+        case .pdf(let data):
+            LazyImagePreview(
+                request: .data(data, kind: .pdf, cacheKey: item.contentHash),
+                placeholder: .pdf(title: item.displayTitle),
+                isVisible: isPreviewInVisibleArea
+            )
 
         case .fileURL(let url):
-            if url.isFileURL, let image = ClipboardPreviewImageCache.shared.image(forFileURL: url) {
-                ImagePreview(image: image)
+            if let request = ClipboardImagePreviewRequest(
+                fileURL: url,
+                cacheKey: item.contentHash,
+                embeddedData: item.embeddedPreviewData(for: url)
+            ) {
+                LazyImagePreview(
+                    request: request,
+                    placeholder: request.placeholder(title: item.displayTitle, fallbackText: item.previewText),
+                    isVisible: isPreviewInVisibleArea
+                )
             } else {
                 Text(item.previewText)
                     .previewTextStyle()
@@ -412,50 +451,538 @@ private struct ClipboardCard: View, Equatable {
 }
 
 private struct ImagePreview: View {
-    let image: NSImage
+    let image: CachedClipboardPreviewImage
+    let kind: PreviewableFileKind
+
+    private var cornerRadius: CGFloat {
+        kind == .pdf ? 7 : 9
+    }
 
     var body: some View {
-        Image(nsImage: image)
-            .resizable()
-            .scaledToFill()
-            .frame(height: ClipboardCardMetrics.previewHeight)
-            .frame(maxWidth: .infinity)
-            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .clipped()
+        Group {
+            switch kind {
+            case .image:
+                Image(decorative: image.cgImage, scale: 1)
+                    .resizable()
+                    .scaledToFill()
+
+            case .pdf:
+                Image(decorative: image.cgImage, scale: 1)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(.vertical, 5)
+                    .padding(.horizontal, 24)
+                    .background(PDFPreviewBackdrop())
+            }
+        }
+        .frame(height: ClipboardCardMetrics.previewHeight)
+        .frame(maxWidth: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .clipped()
+    }
+}
+
+private struct LazyImagePreview: View {
+    let request: ClipboardImagePreviewRequest
+    let placeholder: PreviewPlaceholder
+    let isVisible: Bool
+
+    @State private var image: CachedClipboardPreviewImage?
+    @State private var isLoading = false
+    @State private var failedRequestID: String?
+    @State private var loadTask: Task<Void, Never>?
+
+    var body: some View {
+        ZStack {
+            if isVisible, let image {
+                ImagePreview(image: image, kind: request.kind)
+            } else {
+                placeholder
+            }
+        }
+        .onAppear {
+            updateLoadingState()
+        }
+        .onDisappear {
+            unload()
+        }
+        .onChange(of: isVisible) { _, _ in
+            updateLoadingState()
+        }
+        .onChange(of: request.id) { _, _ in
+            reset()
+            updateLoadingState()
+        }
+    }
+
+    private func updateLoadingState() {
+        if isVisible {
+            loadIfNeeded()
+        } else {
+            unload()
+        }
+    }
+
+    private func loadIfNeeded() {
+        guard image == nil, !isLoading, failedRequestID != request.id else { return }
+
+        if let cachedImage = ClipboardPreviewImageCache.shared.cachedImage(for: request) {
+            image = cachedImage
+            return
+        }
+
+        guard !ClipboardPreviewImageCache.shared.hasCachedFailure(for: request) else {
+            failedRequestID = request.id
+            return
+        }
+
+        isLoading = true
+        let currentRequest = request
+        loadTask = Task(priority: .utility) {
+            let loadedImage = await ClipboardPreviewImageCache.shared.image(
+                for: currentRequest,
+                maxPixelSize: ClipboardCardMetrics.previewMaxPixelSize
+            )
+
+            await MainActor.run {
+                guard !Task.isCancelled else { return }
+                isLoading = false
+
+                if let loadedImage {
+                    image = loadedImage
+                } else {
+                    failedRequestID = currentRequest.id
+                }
+            }
+        }
+    }
+
+    private func unload() {
+        loadTask?.cancel()
+        loadTask = nil
+        isLoading = false
+        image = nil
+    }
+
+    private func reset() {
+        unload()
+        failedRequestID = nil
+    }
+}
+
+private enum PreviewPlaceholder: View {
+    case text(String)
+    case pdf(title: String)
+
+    var body: some View {
+        switch self {
+        case .text(let text):
+            Text(text)
+                .previewTextStyle()
+        case .pdf(let title):
+            MicroPDFPreview(title: title)
+        }
+    }
+}
+
+private struct MicroPDFPreview: View {
+    let title: String
+
+    var body: some View {
+        ZStack {
+            PDFPreviewBackdrop()
+
+            HStack(spacing: 10) {
+                ZStack(alignment: .topTrailing) {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.white.opacity(0.96))
+                        .frame(width: 48, height: 62)
+                        .shadow(color: .black.opacity(0.22), radius: 7, y: 4)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color.black.opacity(0.22))
+                            .frame(width: 24, height: 5)
+                        ForEach(0..<4, id: \.self) { index in
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Color.black.opacity(index == 0 ? 0.16 : 0.10))
+                                .frame(width: index == 3 ? 20 : 30, height: 3)
+                        }
+                    }
+                    .padding(.top, 12)
+                    .padding(.leading, 9)
+                    .frame(width: 48, height: 62, alignment: .topLeading)
+
+                    Text("PDF")
+                        .font(.system(size: 7, weight: .black, design: .rounded))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(Color(red: 0.86, green: 0.18, blue: 0.18))
+                        )
+                        .offset(x: 5, y: 8)
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.82))
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+
+                    HStack(spacing: 4) {
+                        ForEach(0..<3, id: \.self) { _ in
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(.white.opacity(0.22))
+                                .frame(height: 3)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 13)
+        }
+        .frame(height: ClipboardCardMetrics.previewHeight)
+        .frame(maxWidth: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .clipped()
+    }
+}
+
+private struct PDFPreviewBackdrop: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.96, green: 0.98, blue: 1.0).opacity(0.28),
+                        Color(red: 0.16, green: 0.18, blue: 0.20).opacity(0.42)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(.white.opacity(0.20), lineWidth: 1)
+            )
+    }
+}
+
+private struct ScrollAreaVisibilityReader: View {
+    let viewportWidth: CGFloat
+    @Binding var isVisible: Bool
+
+    var body: some View {
+        GeometryReader { proxy in
+            let frame = proxy.frame(in: .named(ClipboardHistoryLayout.coordinateSpaceName))
+            let visible = frame.maxX > 0 && frame.minX < viewportWidth
+
+            Color.clear
+                .onAppear {
+                    updateVisibility(visible)
+                }
+                .onChange(of: visible) { _, newValue in
+                    updateVisibility(newValue)
+                }
+        }
+    }
+
+    private func updateVisibility(_ newValue: Bool) {
+        guard isVisible != newValue else { return }
+
+        DispatchQueue.main.async {
+            guard isVisible != newValue else { return }
+            isVisible = newValue
+        }
+    }
+}
+
+private struct CachedClipboardPreviewImage: @unchecked Sendable {
+    let cgImage: CGImage
+    let cost: Int
+
+    nonisolated init(cgImage: CGImage) {
+        self.cgImage = cgImage
+        self.cost = max(cgImage.bytesPerRow * cgImage.height, 1)
+    }
+}
+
+private enum ClipboardImagePreviewRequest: Identifiable, Equatable, Sendable {
+    case data(Data, kind: PreviewableFileKind, cacheKey: String)
+    case fileURL(URL, kind: PreviewableFileKind)
+
+    nonisolated init?(fileURL url: URL, cacheKey: String, embeddedData: Data?) {
+        guard let kind = PreviewableFileKind(fileURL: url) else { return nil }
+
+        if let embeddedData {
+            self = .data(embeddedData, kind: kind, cacheKey: "file-preview:\(cacheKey)")
+        } else {
+            self = .fileURL(url, kind: kind)
+        }
+    }
+
+    nonisolated var id: String {
+        cacheKey
+    }
+
+    nonisolated var cacheKey: String {
+        switch self {
+        case .data(_, let kind, let cacheKey):
+            "data:\(kind.rawValue):\(cacheKey)"
+        case .fileURL(let url, let kind):
+            "file:\(kind.rawValue):\(url.standardizedFileURL.path)"
+        }
+    }
+
+    nonisolated var kind: PreviewableFileKind {
+        switch self {
+        case .data(_, let kind, _), .fileURL(_, let kind):
+            kind
+        }
+    }
+
+    nonisolated func placeholder(title: String, fallbackText: String) -> PreviewPlaceholder {
+        switch kind {
+        case .image:
+            .text(fallbackText)
+        case .pdf:
+            .pdf(title: title)
+        }
+    }
+
+    nonisolated func makeThumbnail(maxPixelSize: Int) -> CachedClipboardPreviewImage? {
+        switch self {
+        case .data(let data, let kind, _):
+            return kind.thumbnail(forData: data, maxPixelSize: maxPixelSize)
+        case .fileURL(let url, let kind):
+            return kind.thumbnail(forFileURL: url, maxPixelSize: maxPixelSize)
+        }
+    }
+}
+
+private extension PreviewableFileKind {
+    nonisolated func thumbnail(forData data: Data, maxPixelSize: Int) -> CachedClipboardPreviewImage? {
+        switch self {
+        case .image:
+            makeImageThumbnail(source: CGImageSourceCreateWithData(data as CFData, imageSourceOptions), maxPixelSize: maxPixelSize)
+        case .pdf:
+            makePDFThumbnail(document: CGDataProvider(data: data as CFData).flatMap(CGPDFDocument.init), maxPixelSize: maxPixelSize)
+        }
+    }
+
+    nonisolated func thumbnail(forFileURL url: URL, maxPixelSize: Int) -> CachedClipboardPreviewImage? {
+        guard url.isFileURL else { return nil }
+
+        let isSecurityScoped = url.startAccessingSecurityScopedResource()
+        defer {
+            if isSecurityScoped {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        switch self {
+        case .image:
+            return makeImageThumbnail(
+                source: CGImageSourceCreateWithURL(url as CFURL, imageSourceOptions),
+                maxPixelSize: maxPixelSize
+            )
+        case .pdf:
+            return makePDFThumbnail(document: CGPDFDocument(url as CFURL), maxPixelSize: maxPixelSize)
+        }
+    }
+
+    private nonisolated var imageSourceOptions: CFDictionary {
+        [
+            kCGImageSourceShouldCache: false
+        ] as CFDictionary
+    }
+
+    private nonisolated func makeImageThumbnail(
+        source: CGImageSource?,
+        maxPixelSize: Int
+    ) -> CachedClipboardPreviewImage? {
+        guard let source else { return nil }
+
+        let thumbnailOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(maxPixelSize, 1)
+        ] as CFDictionary
+
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else {
+            return nil
+        }
+
+        return CachedClipboardPreviewImage(cgImage: image)
+    }
+
+    private nonisolated func makePDFThumbnail(
+        document: CGPDFDocument?,
+        maxPixelSize: Int
+    ) -> CachedClipboardPreviewImage? {
+        guard let page = document?.page(at: 1) else { return nil }
+
+        let cropBox = page.getBoxRect(.cropBox)
+        let pageRect = cropBox.isEmpty ? page.getBoxRect(.mediaBox) : cropBox
+        guard pageRect.width > 0, pageRect.height > 0 else { return nil }
+
+        let scale = CGFloat(max(maxPixelSize, 1)) / max(pageRect.width, pageRect.height)
+        let width = max(Int((pageRect.width * scale).rounded(.up)), 1)
+        let height = max(Int((pageRect.height * scale).rounded(.up)), 1)
+        let targetRect = CGRect(x: 0, y: 0, width: width, height: height)
+
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+
+        context.interpolationQuality = .high
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(targetRect)
+        context.saveGState()
+        context.translateBy(x: 0, y: targetRect.height)
+        context.scaleBy(x: 1, y: -1)
+        context.concatenate(
+            page.getDrawingTransform(
+                .cropBox,
+                rect: targetRect,
+                rotate: 0,
+                preserveAspectRatio: true
+            )
+        )
+        context.drawPDFPage(page)
+        context.restoreGState()
+
+        guard let image = context.makeImage() else { return nil }
+        return CachedClipboardPreviewImage(cgImage: image)
+    }
+}
+
+private extension ClipboardItem {
+    nonisolated var displayKindTitle: String {
+        if case .fileURL(let url) = content,
+           let kind = PreviewableFileKind(fileURL: url) {
+            return kind.displayTitle
+        }
+
+        return kind.title
+    }
+
+    nonisolated var displaySymbolName: String {
+        if case .fileURL(let url) = content,
+           let kind = PreviewableFileKind(fileURL: url) {
+            return kind.symbolName
+        }
+
+        return kind.symbolName
+    }
+
+    nonisolated func embeddedPreviewData(for fileURL: URL) -> Data? {
+        guard let kind = PreviewableFileKind(fileURL: fileURL) else { return nil }
+
+        if let data = representations.first(where: { $0.type == ClipboardTypeIdentifier.filePreviewData })?.data {
+            return data
+        }
+
+        let dataTypes = switch kind {
+        case .image:
+            ClipboardTypeIdentifier.imageDataTypes
+        case .pdf:
+            ClipboardTypeIdentifier.pdfDataTypes
+        }
+
+        return representations.first { dataTypes.contains($0.type) }?.data
+    }
+}
+
+private extension PreviewableFileKind {
+    nonisolated var displayTitle: String {
+        switch self {
+        case .image:
+            "Image"
+        case .pdf:
+            "PDF"
+        }
+    }
+
+    nonisolated var symbolName: String {
+        switch self {
+        case .image:
+            "photo"
+        case .pdf:
+            "doc.richtext"
+        }
     }
 }
 
 private final class ClipboardPreviewImageCache {
     static let shared = ClipboardPreviewImageCache()
 
-    private let cache = NSCache<NSString, NSImage>()
+    private let images = NSCache<NSString, CachedClipboardPreviewImageBox>()
+    private let failures = NSCache<NSString, NSNumber>()
 
     private init() {
-        cache.countLimit = 120
+        images.countLimit = 80
+        images.totalCostLimit = 48 * 1024 * 1024
+        failures.countLimit = 200
     }
 
-    func image(forData data: Data, cacheKey: String) -> NSImage? {
-        image(forKey: "data:\(cacheKey)") {
-            NSImage(data: data)
-        }
+    func cachedImage(for request: ClipboardImagePreviewRequest) -> CachedClipboardPreviewImage? {
+        images.object(forKey: request.cacheKey as NSString)?.image
     }
 
-    func image(forFileURL url: URL) -> NSImage? {
-        image(forKey: "file:\(url.standardizedFileURL.path)") {
-            NSImage(contentsOf: url)
-        }
+    func hasCachedFailure(for request: ClipboardImagePreviewRequest) -> Bool {
+        failures.object(forKey: request.cacheKey as NSString) != nil
     }
 
-    private func image(forKey key: String, loader: () -> NSImage?) -> NSImage? {
-        let cacheKey = key as NSString
-        if let cachedImage = cache.object(forKey: cacheKey) {
+    func image(
+        for request: ClipboardImagePreviewRequest,
+        maxPixelSize: Int
+    ) async -> CachedClipboardPreviewImage? {
+        let cacheKey = request.cacheKey as NSString
+
+        if let cachedImage = images.object(forKey: cacheKey)?.image {
             return cachedImage
         }
 
-        guard let image = loader() else { return nil }
-        cache.setObject(image, forKey: cacheKey)
-        return image
+        if failures.object(forKey: cacheKey) != nil {
+            return nil
+        }
+
+        let loadedImage = await Task.detached(priority: .utility) {
+            request.makeThumbnail(maxPixelSize: maxPixelSize)
+        }.value
+
+        if let loadedImage {
+            images.setObject(CachedClipboardPreviewImageBox(loadedImage), forKey: cacheKey, cost: loadedImage.cost)
+        } else {
+            failures.setObject(NSNumber(value: true), forKey: cacheKey)
+        }
+
+        return loadedImage
     }
+}
+
+private final class CachedClipboardPreviewImageBox {
+    let image: CachedClipboardPreviewImage
+
+    init(_ image: CachedClipboardPreviewImage) {
+        self.image = image
+    }
+}
+
+private enum ClipboardHistoryLayout {
+    static let coordinateSpaceName = "ClipboardHistoryScroll"
 }
 
 private enum ClipboardCardMetrics {
@@ -465,6 +992,7 @@ private enum ClipboardCardMetrics {
     static let previewHeight: CGFloat = 84
     static let footerHeight: CGFloat = 15
     static let footerIconWidth: CGFloat = 10
+    static let previewMaxPixelSize = Int(max(width - padding * 2, previewHeight) * 2)
 }
 
 private struct EmptyClipboardView: View {

@@ -54,11 +54,58 @@ final class NSPasteboardClipboardMonitor: ClipboardMonitor {
             return []
         }
 
-        return pasteboardItems.enumerated().flatMap { index, item in
-            item.types.compactMap { type in
+        let representations: [PasteboardRepresentation] = pasteboardItems.enumerated().flatMap { index, item in
+            item.types.compactMap { type -> PasteboardRepresentation? in
                 guard let data = item.data(forType: type) else { return nil }
                 return PasteboardRepresentation(itemIndex: index, type: type.rawValue, data: data)
             }
+        }
+
+        return representations + filePreviewRepresentations(for: representations)
+    }
+
+    private func filePreviewRepresentations(for representations: [PasteboardRepresentation]) -> [PasteboardRepresentation] {
+        representations.compactMap { representation in
+            guard representation.type == "public.file-url",
+                  let string = representation.stringValue,
+                  let url = URL(string: string.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  PreviewableFileKind(fileURL: url) != nil,
+                  let data = previewData(for: url)
+            else {
+                return nil
+            }
+
+            return PasteboardRepresentation(
+                itemIndex: representation.itemIndex,
+                type: ClipboardTypeIdentifier.filePreviewData,
+                data: data
+            )
+        }
+    }
+
+    private func previewData(for url: URL) -> Data? {
+        guard url.isFileURL else { return nil }
+
+        let isSecurityScoped = url.startAccessingSecurityScopedResource()
+        defer {
+            if isSecurityScoped {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile != false,
+                  let fileSize = values.fileSize,
+                  fileSize > 0,
+                  fileSize <= PreviewableFileKind.maxStoredPreviewBytes
+            else {
+                return nil
+            }
+
+            return try Data(contentsOf: url)
+        } catch {
+            return nil
         }
     }
 }

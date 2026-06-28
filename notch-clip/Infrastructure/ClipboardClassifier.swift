@@ -47,7 +47,11 @@ enum ClipboardClassifier {
             return .richText(richText.data, plainText: firstText(in: representations))
         }
 
-        if let image = firstRepresentation(ofTypes: ["public.png", "public.tiff", "public.jpeg"], in: representations) {
+        if let pdf = firstRepresentation(ofTypes: ClipboardTypeIdentifier.pdfDataTypes, in: representations) {
+            return .pdf(pdf.data)
+        }
+
+        if let image = firstRepresentation(ofTypes: ClipboardTypeIdentifier.imageDataTypes, in: representations) {
             return .image(image.data)
         }
 
@@ -157,6 +161,8 @@ enum ClipboardClassifier {
             return url.host ?? "URL"
         case .fileURL(let url):
             return url.lastPathComponent
+        case .pdf:
+            return "PDF"
         case .color(let color):
             return color
         default:
@@ -181,6 +187,8 @@ enum ClipboardClassifier {
             return plainText ?? "Rich text content"
         case .image:
             return "Image content"
+        case .pdf:
+            return "PDF content"
         case .raw(let type, _):
             return type
         }

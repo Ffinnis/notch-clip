@@ -6,6 +6,7 @@ enum ClipboardContentKind: String, Codable, CaseIterable, Identifiable {
     case code
     case color
     case image
+    case pdf
     case fileURL
     case richText
     case html
@@ -20,6 +21,7 @@ enum ClipboardContentKind: String, Codable, CaseIterable, Identifiable {
         case .code: "Code"
         case .color: "Color"
         case .image: "Image"
+        case .pdf: "PDF"
         case .fileURL: "File"
         case .richText: "Rich Text"
         case .html: "HTML"
@@ -34,6 +36,7 @@ enum ClipboardContentKind: String, Codable, CaseIterable, Identifiable {
         case .code: "curlybraces"
         case .color: "paintpalette"
         case .image: "photo"
+        case .pdf: "doc.richtext"
         case .fileURL: "doc"
         case .richText: "doc.richtext"
         case .html: "chevron.left.forwardslash.chevron.right"
@@ -48,6 +51,7 @@ enum ClipboardContent: Equatable {
     case code(String, language: String?)
     case color(String)
     case image(Data)
+    case pdf(Data)
     case fileURL(URL)
     case richText(Data, plainText: String?)
     case html(String)
@@ -60,6 +64,7 @@ enum ClipboardContent: Equatable {
         case .code: .code
         case .color: .color
         case .image: .image
+        case .pdf: .pdf
         case .fileURL: .fileURL
         case .richText: .richText
         case .html: .html
@@ -154,7 +159,7 @@ struct ClipboardItem: Identifiable, Equatable {
 
     nonisolated var metadata: String {
         switch content {
-        case .image(let data):
+        case .image(let data), .pdf(let data):
             ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)
         case .raw(_, let byteCount):
             ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
@@ -209,4 +214,47 @@ protocol ClipboardMonitor: AnyObject {
     var onChange: ((ClipboardItem) -> Void)? { get set }
     func start()
     func stop()
+}
+
+enum ClipboardTypeIdentifier {
+    nonisolated static let imageDataTypes: Set<String> = [
+        "public.png",
+        "public.tiff",
+        "public.jpeg",
+        "public.heic",
+        "public.heif",
+        "public.image",
+        "com.compuserve.gif"
+    ]
+
+    nonisolated static let pdfDataTypes: Set<String> = [
+        "com.adobe.pdf",
+        "public.pdf"
+    ]
+
+    nonisolated static let filePreviewData = "revvu.notch-clip.file-preview-data"
+
+    nonisolated static func isInternal(_ type: String) -> Bool {
+        type == filePreviewData
+    }
+}
+
+enum PreviewableFileKind: String, Sendable {
+    case image
+    case pdf
+
+    nonisolated static let maxStoredPreviewBytes = 12 * 1024 * 1024
+
+    nonisolated init?(fileURL url: URL) {
+        guard url.isFileURL else { return nil }
+
+        switch url.pathExtension.lowercased() {
+        case "jpg", "jpeg", "png", "tif", "tiff", "gif", "heic", "heif", "webp", "bmp":
+            self = .image
+        case "pdf":
+            self = .pdf
+        default:
+            return nil
+        }
+    }
 }
